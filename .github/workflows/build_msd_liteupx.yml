@@ -1,0 +1,88 @@
+name: 编译 AX3600 极限瘦身版 msd_lite (UPX)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 1. 拉取仓库
+      uses: actions/checkout@v4
+
+    - name: 2. 安装环境 (编译器 + CMake + UPX)
+      run: |
+        sudo apt-get update
+        # 增加安装 upx-ucl
+        sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu build-essential cmake upx-ucl
+
+    - name: 3. 下载源码
+      run: |
+        git clone --recursive https://github.com/rozhuk-im/msd_lite.git
+
+    - name: 4. 生成交叉编译配置
+      run: |
+        cd msd_lite
+        cat <<EOF > toolchain.cmake
+        set(CMAKE_SYSTEM_NAME Linux)
+        set(CMAKE_SYSTEM_PROCESSOR aarch64)
+        set(CMAKE_C_COMPILER aarch64-linux-gnu-gcc)
+        set(CMAKE_CXX_COMPILER aarch64-linux-gnu-g++)
+        set(CMAKE_FIND_ROOT_PATH /usr/aarch64-linux-gnu)
+        set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+        set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+        set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+        set(PTHREAD_LIBRARY pthread CACHE STRING "Forced pthread" FORCE)
+        set(CMAKE_USE_PTHREADS_INIT 1)
+        EOF
+
+    - name: 5. 编译 (改为体积优先)
+      run: |
+        cd msd_lite
+        mkdir build
+        cd build
+        
+        # 优化参数变更：
+        # -Os: 针对体积优化，而不是速度
+        # -flto: 链接时优化，剔除无用代码
+        # -Wl,--gc-sections: 进一步剔除未使用的段
+        cmake -DCMAKE_TOOLCHAIN_FILE=../toolchain.cmake \
+              -DCMAKE_C_FLAGS="-Os -flto -mcpu=cortex-a53 -ffunction-sections -fdata-sections -Wall -D_GNU_SOURCE -static" \
+              -DCMAKE_EXE_LINKER_FLAGS="-static -flto -Wl,--gc-sections" \
+              -DCMAKE_BUILD_TYPE=MinSizeRel ..
+        
+        make -j$(nproc)
+
+    - name: 6. 验证、瘦身与压缩 (核心步骤)
+      run: |
+        TARGET_FILE=$(find msd_lite/build -name "msd_lite" -type f | head -n 1)
+        
+        if [ -z "$TARGET_FILE" ]; then
+          echo "❌ 未找到文件"
+          exit 1
+        fi
+        
+        echo "⬇️ 原始大小："
+        ls -lh "$TARGET_FILE"
+        
+        # 1. 剥离符号 (Strip)
+        aarch64-linux-gnu-strip --strip-all "$TARGET_FILE"
+        echo "⬇️ Strip 后大小："
+        ls -lh "$TARGET_FILE"
+        
+        # 2. UPX 极致压缩
+        # --best: 最高压缩率
+        # --lzma: 使用 LZMA 算法 (压缩率最高，解压稍慢但对于 500k 文件无感知)
+        upx --best --lzma "$TARGET_FILE"
+        
+        echo "🎉 UPX 压缩后最终大小："
+        ls -lh "$TARGET_FILE"
+        
+        cp "$TARGET_FILE" ./msd_lite_tiny
+
+    - name: 7. 上传成品
+      uses: actions/upload-artifact@v4
+      with:
+        name: msd_lite-ax3600-tiny
+        path: ./msd_lite_tiny
