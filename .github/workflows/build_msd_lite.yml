@@ -1,0 +1,54 @@
+name: 编译 AX3600 专用 msd_lite
+
+# 触发条件：手动点击按钮时触发
+on: 
+  workflow_dispatch:
+
+jobs:
+  build:
+    # 使用 Ubuntu 系统作为编译环境
+    runs-on: ubuntu-latest
+    
+    steps:
+    # 1. 拉取本仓库代码 (虽然本仓库没代码，但这是标准流程)
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    # 2. 安装交叉编译工具
+    # 因为 GitHub 服务器是 x86 架构，而 AX3600 是 ARM64 架构
+    # 所以必须安装 aarch64-linux-gnu-gcc 编译器
+    - name: Install Cross-Compiler
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y gcc-aarch64-linux-gnu build-essential
+
+    # 3. 下载 msd_lite 源码
+    - name: Clone msd_lite Source
+      run: |
+        git clone https://github.com/rozhuk-im/msd_lite.git
+
+    # 4. 开始编译 (核心步骤)
+    # -static: 静态链接，把所有依赖库打包进程序，防止路由器缺少库文件
+    # -O3: 开启最高级优化，运行速度最快
+    - name: Compile Static Binary
+      run: |
+        cd msd_lite
+        make CC=aarch64-linux-gnu-gcc CFLAGS="-O3 -static -Wall -D_GNU_SOURCE"
+
+    # 5. 检查文件并瘦身
+    # strip 命令可以去除调试符号，让文件体积减小 50% 以上
+    - name: Check and Strip
+      run: |
+        cd msd_lite/src
+        ls -l msd_lite
+        file msd_lite
+        aarch64-linux-gnu-strip msd_lite
+        ls -l msd_lite
+
+    # 6. 上传编译结果
+    # 这一步会把编译好的文件打包，让你下载
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: msd_lite-ax3600-arm64
+        path: msd_lite/src/msd_lite
