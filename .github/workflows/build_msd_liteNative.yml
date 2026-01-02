@@ -1,0 +1,85 @@
+name: 编译 AX3600 均衡瘦身版 (~350KB)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 1. 拉取仓库
+      uses: actions/checkout@v4
+
+    - name: 2. 安装环境
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu build-essential cmake
+
+    - name: 3. 下载源码
+      run: |
+        # 必须加 --recursive 下载依赖库
+        git clone --recursive https://github.com/rozhuk-im/msd_lite.git
+
+    - name: 4. 生成交叉编译配置
+      run: |
+        cd msd_lite
+        cat <<EOF > toolchain.cmake
+        set(CMAKE_SYSTEM_NAME Linux)
+        set(CMAKE_SYSTEM_PROCESSOR aarch64)
+        set(CMAKE_C_COMPILER aarch64-linux-gnu-gcc)
+        set(CMAKE_CXX_COMPILER aarch64-linux-gnu-g++)
+        set(CMAKE_FIND_ROOT_PATH /usr/aarch64-linux-gnu)
+        set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+        set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+        set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+        set(PTHREAD_LIBRARY pthread CACHE STRING "Forced pthread" FORCE)
+        set(CMAKE_USE_PTHREADS_INIT 1)
+        EOF
+
+    - name: 5. 编译 (体积优化模式)
+      run: |
+        cd msd_lite
+        mkdir build
+        cd build
+        
+        # 核心修改点：
+        # -Os: 告诉编译器体积优先，而不是速度优先
+        # -flto: 开启链接时优化 (Link Time Optimization)，剔除没用到的死代码
+        # -ffunction-sections -fdata-sections + --gc-sections: 把未使用的函数段删掉
+        # MinSizeRel: CMake 的最小体积发布模式
+        
+        cmake -DCMAKE_TOOLCHAIN_FILE=../toolchain.cmake \
+              -DCMAKE_C_FLAGS="-Os -flto -mcpu=cortex-a53 -ffunction-sections -fdata-sections -Wall -D_GNU_SOURCE -static" \
+              -DCMAKE_EXE_LINKER_FLAGS="-static -flto -Wl,--gc-sections" \
+              -DCMAKE_BUILD_TYPE=MinSizeRel ..
+        
+        make -j$(nproc)
+
+    - name: 6. 验证与瘦身
+      run: |
+        # 精确查找
+        TARGET_FILE=$(find msd_lite/build -name "msd_lite" -type f | head -n 1)
+        
+        if [ -z "$TARGET_FILE" ]; then
+          echo "❌ 错误：未找到文件"
+          exit 1
+        fi
+        
+        echo "⬇️ 瘦身前大小："
+        ls -lh "$TARGET_FILE"
+        
+        # 剥离调试符号 (这是把 3MB 变成 350KB 的关键)
+        aarch64-linux-gnu-strip --strip-all "$TARGET_FILE"
+        
+        echo "✅ 瘦身成功，最终大小："
+        ls -lh "$TARGET_FILE"
+        
+        # 复制出来
+        cp "$TARGET_FILE" ./msd_lite_opt
+
+    - name: 7. 上传成品
+      uses: actions/upload-artifact@v4
+      with:
+        name: msd_lite-ax3600-opt-350kb
+        path: ./msd_lite_opt
